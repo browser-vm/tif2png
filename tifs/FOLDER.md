@@ -1,0 +1,1 @@
+This folder has been created for you to place your TIF files in, but you can use any other folder.
