@@ -1,5 +1,6 @@
 import os
 import sys
+import gc  # Imported for aggressive memory management
 from pathlib import Path
 from PIL import Image
 from rich.console import Console
@@ -12,6 +13,9 @@ from rich.progress import (
     TaskProgressColumn,
     TimeRemainingColumn,
 )
+
+# Disable the decompression bomb limit for massive TIF files
+Image.MAX_IMAGE_PIXELS = None
 
 console = Console()
 
@@ -26,27 +30,39 @@ def process_image(file_path, output_dir, target_format, scale_ratio):
             resized_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
             
             # Convert color mode if necessary (e.g., RGBA/CMYK to RGB for JPG)
-            if target_format == "jpg" and resized_img.mode != "RGB":
-                resized_img = resized_img.convert("RGB")
+            if target_format in ["jpg", "webp"] and resized_img.mode != "RGB":
+                # Create a new reference for the RGB version
+                converted_img = resized_img.convert("RGB")
+                # Immediately delete the older resized_img from memory
+                del resized_img 
+                resized_img = converted_img
                 
             # Construct output file path
             output_filename = f"{file_path.stem}.{target_format}"
             output_path = output_dir / output_filename
             
             # Save the image
-            # Optimizing for WebP and JPG to help reduce size further
             if target_format in ["jpg", "webp"]:
                 resized_img.save(output_path, quality=85, optimize=True)
             else:
                 resized_img.save(output_path, optimize=True)
                 
-            return True, None
+        # Explicitly delete the heavy image object from memory
+        del resized_img
+        
+        # Force garbage collection to free up RAM immediately
+        gc.collect()
+        
+        return True, None
+        
     except Exception as e:
+        # Ensure RAM cleanup happens even if the file fails to process
+        gc.collect()
         return False, str(e)
 
 def main():
-    console.print("[bold cyan]📸 Interactive TIF/TIFF Image Converter[/bold cyan]", justify="center")
-    console.print("This script will convert your TIF files, scale them down, and save them in a new folder.\n")
+    console.print("[bold cyan]📸 Interactive Massive TIF/TIFF Converter[/bold cyan]", justify="center")
+    console.print("This script will scale down large TIF files while managing your system RAM.\n")
 
     # 1. Get Source Directory
     while True:
@@ -116,7 +132,7 @@ def main():
         task = progress.add_task("[cyan]Converting images...", total=len(tif_files))
         
         for file_path in tif_files:
-            progress.update(task, description=f"[cyan]Converting {file_path.name}...")
+            progress.update(task, description=f"[cyan]Converting {file_path.name[:20]}...[/cyan]")
             
             success, error_msg = process_image(file_path, output_dir, target_format, scale_ratio)
             
