@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 import rasterio
 from rich.console import Console
-from rich.prompt import Prompt, IntPrompt
+from rich.prompt import Prompt, IntPrompt, Confirm
 from rich.progress import (
     Progress,
     SpinnerColumn,
@@ -16,21 +16,37 @@ from rich.progress import (
 
 console = Console()
 
-def normalize_band(band_data):
+def normalize_band(band_data, optimize_highlights=False):
     """
-    Applies a 2nd-98th percentile stretch to normalize 16-bit satellite imagery 
-    into an 8-bit format for standard RGB viewing.
+    Normalizes 16-bit satellite imagery into an 8-bit format.
+    If optimize_highlights is True, uses a wider percentile range and gamma 
+    correction to preserve details in very bright areas.
     """
     # Exclude zero (often NoData) from the percentile calculation to avoid skewing
     valid_data = band_data[band_data > 0]
     if len(valid_data) == 0:
         return np.zeros_like(band_data, dtype=np.uint8)
 
-    p2, p98 = np.percentile(valid_data, (2, 98))
+    if optimize_highlights:
+        # Retain more highlight data, but clip the absolute bottom 1% to reduce haze
+        p_low, p_high = np.percentile(valid_data, (1, 99.9))
+    else:
+        # Standard linear stretch
+        p_low, p_high = np.percentile(valid_data, (2, 98))
     
-    # Clip extreme values and normalize to 0-255
-    band_clipped = np.clip(band_data, p2, p98)
-    band_normalized = (band_clipped - p2) / (p98 - p2) * 255.0
+    # Clip extreme values
+    band_clipped = np.clip(band_data, p_low, p_high)
+    
+    # Normalize to a 0.0 - 1.0 float scale first
+    band_norm_float = (band_clipped - p_low) / (p_high - p_low)
+    
+    if optimize_highlights:
+        # Apply gamma correction (gamma < 1 lifts midtones while preserving the newly saved highlights)
+        gamma = 0.6
+        band_norm_float = np.power(band_norm_float, gamma)
+    
+    # Scale to 8-bit (0-255)
+    band_normalized = band_norm_float * 255.0
     
     return band_normalized.astype(np.uint8)
 
@@ -59,10 +75,14 @@ def main():
             g_band = IntPrompt.ask("Which band number is [bold green]Green[/bold green]?", default=2)
             b_band = IntPrompt.ask("Which band number is [bold blue]Blue[/bold blue]?", default=1)
 
-            # 3. Get output file
+            # 3. Prompt for Highlight Optimization
+            console.print("\n[cyan]Highlight Optimization preserves detail in bright areas like clouds, snow, or bright roofs by applying a non-linear gamma stretch.[/cyan]")
+            opt_highlights = Confirm.ask("Enable Highlight Optimization?", default=True)
+
+            # 4. Get output file
             output_path = Prompt.ask("\n[bold yellow]Enter the path for the output RGB TIF file[/bold yellow]", default="output_rgb.tif")
 
-            # 4. Processing with Progress Bar
+            # 5. Processing with Progress Bar
             profile = src.profile
             profile.update(
                 count=3,
@@ -85,15 +105,15 @@ def main():
 
                 # Read and normalize bands
                 progress.update(task_total, description=f"[red]Reading & Normalizing Red Band ({r_band})...[/red]")
-                r_data = normalize_band(src.read(r_band))
+                r_data = normalize_band(src.read(r_band), optimize_highlights=opt_highlights)
                 progress.advance(task_total)
 
                 progress.update(task_total, description=f"[green]Reading & Normalizing Green Band ({g_band})...[/green]")
-                g_data = normalize_band(src.read(g_band))
+                g_data = normalize_band(src.read(g_band), optimize_highlights=opt_highlights)
                 progress.advance(task_total)
 
                 progress.update(task_total, description=f"[blue]Reading & Normalizing Blue Band ({b_band})...[/blue]")
-                b_data = normalize_band(src.read(b_band))
+                b_data = normalize_band(src.read(b_band), optimize_highlights=opt_highlights)
                 progress.advance(task_total)
 
                 # Write out
